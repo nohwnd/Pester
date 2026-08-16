@@ -3439,6 +3439,78 @@ i -PassThru:$PassThru {
         }
     }
 
+    b 'BeforeContainer applies to discovery-only runs' {
+        t 'a discovery-only run sees helpers from Pester.BeforeContainer.ps1' {
+            # Run.SkipRun is how an editor asks for the test tree without running
+            # anything. It used to return before the BeforeContainer file was
+            # dot-sourced, so a file that calls a helper while it is being discovered
+            # (here to produce the -ForEach data) failed with "The term ... is not
+            # recognized", even though the very same file discovers and runs fine in a
+            # normal run.
+            $sb = {
+                Describe 'discovery needs the helper' {
+                    It 'case <_>' -ForEach (Get-DiscoveryCases) {
+                        $true | Should -Be $true
+                    }
+                }
+            }
+
+            $repoRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().Guid)
+            $null = New-Item -ItemType Directory -Path $repoRoot -Force
+            Set-Content -Path (Join-Path $repoRoot 'Pester.BeforeContainer.ps1') -Value 'function Get-DiscoveryCases { "alpha", "beta" }'
+
+            try {
+                $r = Invoke-Pester -Configuration ([PesterConfiguration]@{
+                        Run    = @{
+                            ScriptBlock = $sb
+                            PassThru    = $true
+                            SkipRun     = $true
+                            RepoRoot    = $repoRoot
+                        }
+                        Output = @{ Verbosity = 'None' }
+                    })
+
+                $container = $r.Containers[0]
+                # Discovery did not fall over, and both -ForEach cases are in the tree.
+                $container.Result | Verify-Equal 'NotRun'
+                @($container.ErrorRecord).Count | Verify-Equal 0
+                @($container.Blocks.Tests).Count | Verify-Equal 2
+            }
+            finally { Remove-Item -Path $repoRoot -Recurse -Force }
+        }
+
+        t 'a normal run still applies it, and still runs the tests' {
+            # Guards the discovery-only fix against breaking the path that already
+            # worked, where the file is dot-sourced once before each container.
+            $sb = {
+                Describe 'discovery needs the helper' {
+                    It 'case <_>' -ForEach (Get-DiscoveryCases) {
+                        $true | Should -Be $true
+                    }
+                }
+            }
+
+            $repoRoot = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().Guid)
+            $null = New-Item -ItemType Directory -Path $repoRoot -Force
+            Set-Content -Path (Join-Path $repoRoot 'Pester.BeforeContainer.ps1') -Value 'function Get-DiscoveryCases { "alpha", "beta" }'
+
+            try {
+                $r = Invoke-Pester -Configuration ([PesterConfiguration]@{
+                        Run    = @{
+                            ScriptBlock = $sb
+                            PassThru    = $true
+                            RepoRoot    = $repoRoot
+                        }
+                        Output = @{ Verbosity = 'None' }
+                    })
+
+                $r.Result | Verify-Equal 'Passed'
+                $r.PassedCount | Verify-Equal 2
+            }
+            finally { Remove-Item -Path $repoRoot -Recurse -Force }
+        }
+    }
+
     b 'Stray output during the run does not crash Pester (#2655)' {
         t 'a real run with stray output finishes, keeps its results, and warns instead of crashing' {
             # Reproduce the leak end-to-end the way it really happens: something writes to the success

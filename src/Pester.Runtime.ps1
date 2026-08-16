@@ -2152,10 +2152,34 @@ function Invoke-Test {
     # $originalLastError = $originalErrors[0]
     # $originalErrorCount = $originalErrors.Count
 
+    # Prepare the BeforeContainer initialization once. It is dot-sourced into the run session
+    # state before each container so helper modules / functions the parent session would normally
+    # provide are available to both discovery and run. This is the same in sequential and parallel
+    # runs (in parallel each worker dot-sources the same text), so the two modes stay consistent.
+    $beforeContainerScriptBlock = $null
+    if (-not [string]::IsNullOrWhiteSpace($BeforeContainerInit)) {
+        $beforeContainerScriptBlock = [ScriptBlock]::Create($BeforeContainerInit)
+        $beforeContainerSessionStateInternal = $script:SessionStateInternalProperty.GetValue($SessionState, $null)
+        $script:ScriptBlockSessionStateInternalProperty.SetValue($beforeContainerScriptBlock, $beforeContainerSessionStateInternal, $null)
+    }
+
     if ($PesterPreference.Run.SkipRun.Value) {
         # Discovery-only mode (e.g. populating the VS Code Test Explorer). Run a full
         # batch discovery over all containers and return the discovered tree without
         # executing anything.
+        if ($null -ne $beforeContainerScriptBlock) {
+            # Discovery reads the file, so anything the file calls at discovery time
+            # (data for -ForEach, a helper used to build test names) has to be defined
+            # first. Without this, a file that discovers fine in a normal run comes back
+            # empty, or fails with "The term '...' is not recognized", when the caller
+            # only asked for discovery.
+            #
+            # Dot-sourced once for the whole batch rather than per container, because
+            # this path discovers every container in one call. The file has to be
+            # idempotent anyway, the run path re-runs it before each container.
+            . $beforeContainerScriptBlock
+        }
+
         $found = Discover-Test -BlockContainer $BlockContainer -Filter $Filter -SessionState $SessionState
 
         foreach ($f in $found) {
@@ -2191,17 +2215,6 @@ function Invoke-Test {
     $containerCount = @($BlockContainer).Count
     $containerIndex = 0
     $discoveredBlocks = [System.Collections.Generic.List[object]]@()
-
-    # Prepare the BeforeContainer initialization once. It is dot-sourced into the run session
-    # state before each container so helper modules / functions the parent session would normally
-    # provide are available to both discovery and run. This is the same in sequential and parallel
-    # runs (in parallel each worker dot-sources the same text), so the two modes stay consistent.
-    $beforeContainerScriptBlock = $null
-    if (-not [string]::IsNullOrWhiteSpace($BeforeContainerInit)) {
-        $beforeContainerScriptBlock = [ScriptBlock]::Create($BeforeContainerInit)
-        $beforeContainerSessionStateInternal = $script:SessionStateInternalProperty.GetValue($SessionState, $null)
-        $script:ScriptBlockSessionStateInternalProperty.SetValue($beforeContainerScriptBlock, $beforeContainerSessionStateInternal, $null)
-    }
 
     $executedContainers = foreach ($container in $BlockContainer) {
         $containerIndex++
